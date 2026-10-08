@@ -1,0 +1,5 @@
+langgraph            # graph orchestration (nodes, edges, state)
+langchain-anthropic  # lets LangGraph nodes call Claude
+docker               # Python SDK to spin up containers
+pytest               # test runner (also installed inside the container)
+python-dotenv        # loads your API key from .env
