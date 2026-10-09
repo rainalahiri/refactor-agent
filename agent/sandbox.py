@@ -13,8 +13,8 @@ def run_tests(code: str, tests: str) -> tuple[bool, str]:
     client = docker.from_env()
 
     with tempfile.TemporaryDirectory() as tmp:
-        Path(tmp, "refactored.py").write_text(code)
-        Path(tmp, "test_refactored.py").write_text(tests)
+        Path(tmp, "refactored.py").write_text(code, encoding="utf-8")
+        Path(tmp, "test_refactored.py").write_text(tests, encoding="utf-8")
 
         container = client.containers.run(
             IMAGE,

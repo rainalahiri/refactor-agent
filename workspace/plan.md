@@ -1,98 +1,103 @@
-# Refactoring plan: legacy inventory module
+# Refactoring Plan: legacy inventory module
 
 ## 1. Code smells
 
-- **Global mutable state (`inv`, plus a pointless `global inv`)**: tests and callers share hidden state, so isolation and reuse are impossible.
-- **God function `do_stuff`**: it does four unrelated jobs behind a string switch. The name says nothing, and callers get no discoverable API.
-- **Inconsistent return contract**: `add` and `remove` return `None`, `total` returns a number, `report` returns a string, and an unknown action returns `None`. Callers can't tell a no-op from a result.
-- **Unused or misleading parameters**: `name` is required but ignored for `total` and `report`, and `price` is silently ignored when the item already exists.
-- **Magic list `[qty, price]` accessed by index (`inv[k][0]`)**: this is unreadable and error-prone. A named structure would document the intent.
-- **Silent failure paths**: removing a missing item and passing an unknown action both do nothing with no signal. That is risky, but the behavior is relied upon, so it is preserved and documented.
-- **Manual accumulation and string building (`t = t + ...`, `s = s + ...`)**: this is verbose and quadratic for strings.
-- **No docstrings or type hints, and no input validation**: the intended contract is unknown, and negative quantities and prices are accepted.
+- **Global mutable state (`inv`)**: hidden shared state makes tests order-dependent and prevents multiple inventories. The `global inv` statement is also unnecessary, since the dict is never rebound.
+- **God function `do_stuff`**: one function does four unrelated jobs, selected by a string flag. The name says nothing, and the return type varies (`None`, number, or `str`).
+- **Magic string actions with silent fallthrough**: a typo like `"ad"` is silently ignored. This is risky, but it is current behavior.
+- **Unused parameters per action**: `qty` and `price` mean nothing for `total` and `report`, and `name` means nothing for either of them but is still required.
+- **Parallel-index list storage (`inv[name][0]`, `[1]`)**: magic indices are unreadable and error-prone. A named structure is clearer.
+- **Repeated dict lookups and `x = x + y`**: noisy code that hides intent.
+- **String concatenation in a loop and `str()` calls**: slow and verbose. Use `join` or f-strings, but the output format must stay identical.
+- **No docstrings or type hints**: the semantics are undocumented, including the quirks that price is ignored on restock and that over-removal deletes the item.
 
-## 2. Target design (all in `refactored.py`)
+## 2. Target design (`refactored.py`)
 
 ```python
+from dataclasses import dataclass
+
 @dataclass
-class Item:
-    qty: float
+class _Item:
+    qty: float      # int/float, whatever the caller supplied
     price: float
-```
 
-```python
 class Inventory:
-    def __init__(self) -> None: ...        # self._items: dict[str, Item] = {}
-    def add(self, name: str, qty: float = 0, price: float = 0) -> None
-    def remove(self, name: str, qty: float = 0) -> None
-    def total_value(self) -> float          # sum(qty*price), starts from int 0
-    def report(self) -> str
-    def __contains__(self, name: str) -> bool   # convenience, for tests
-    def quantity(self, name: str) -> float | None  # convenience; None if absent
+    def __init__(self) -> None: ...
+        # self._items: dict[str, _Item]  (insertion-ordered)
+
+    def add(self, name: str, qty=0, price=0) -> None:
+        """New name -> store _Item(qty, price). Existing name -> qty += qty; price is NOT updated."""
+
+    def remove(self, name: str, qty=0) -> None:
+        """Missing name -> silent no-op. Else qty -= qty; if result <= 0, delete the item."""
+
+    def total(self):
+        """Sum of qty*price over all items; returns int 0 when empty."""
+
+    def report(self) -> str:
+        """One line per item in insertion order: f"{name}: {qty} @ ${price}\n"; '' when empty."""
+
+    def quantity(self, name: str):
+        """Return the qty, or None if absent (read-only helper, mainly for tests)."""
+
+    def __contains__(self, name: str) -> bool: ...
+    def __len__(self) -> int: ...
+
+_default_inventory = Inventory()
+
+def reset_default_inventory() -> None:
+    """Replace the module-level default with a fresh Inventory (test helper)."""
+
+def do_stuff(action, name, qty=0, price=0):
+    """Backward-compatible facade. Dispatches to _default_inventory:
+       'add'    -> add(name, qty, price); returns None
+       'remove' -> remove(name, qty);     returns None
+       'total'  -> total()
+       'report' -> report()
+       anything else -> no-op, returns None"""
 ```
 
-Responsibilities:
-- `add`: if the name exists, add `qty` to the existing quantity and leave the price untouched. Otherwise create `Item(qty, price)`.
-- `remove`: if the name is missing, do nothing. Otherwise subtract `qty`, and delete the item if the resulting quantity is `<= 0`.
-- `total_value`: `sum((i.qty * i.price for i in items.values()), 0)`, iterated in insertion order.
-- `report`: one line per item, `f"{name}: {str(qty)} @ ${str(price)}\n"`, in insertion order, concatenated with `"".join`.
-
-Backward-compatible shim:
-
-```python
-_default = Inventory()   # module-level; do_stuff must look it up at call time
-
-def do_stuff(action: str, name: str, qty=0, price=0):
-    # Dispatch:
-    #   "add"    -> _default.add(name, qty, price); return None
-    #   "remove" -> _default.remove(name, qty); return None
-    #   "total"  -> return _default.total_value()
-    #   "report" -> return _default.report()
-    #   other    -> return None (no-op)
-```
-
-Use a small dispatch dict or an if/elif chain inside `do_stuff`. It is the only place that knows about action strings.
+Notes for the implementer:
+- Implement the facade with an `if`/`elif` chain or a small dispatch dict. Keep the signature exactly `do_stuff(action, name, qty=0, price=0)`, with `name` still required.
+- Do not add validation to `Inventory`.
+- `_default_inventory` must be looked up at call time, not bound at definition time, so `reset_default_inventory` works.
 
 ## 3. Behavior to preserve
 
-- **Signature**: `do_stuff(action, name, qty=0, price=0)`. `name` stays a required positional argument even for `total` and `report`, where it is ignored.
-- **`add`, new name**: creates the item with the given qty and price. This includes `qty=0`, which creates a zero-quantity entry that is *not* auto-deleted. Negative qty and price are accepted. Returns `None`.
-- **`add`, existing name**: qty is increased by `qty` (negative values allowed). **The `price` argument is ignored**, so the original price is kept. The item is **not** deleted even if the new quantity is `<= 0`. Returns `None`.
-- **`remove`, missing name**: silent no-op, with no exception. Returns `None`.
-- **`remove`, existing name**: qty is decreased. If the result is `<= 0`, the item is deleted, so removing more than is available also deletes with no error. Default `qty=0` subtracts nothing, but it still deletes an item whose quantity is already `<= 0`, for example a zero-quantity item created by `add`.
-- **`total`**: returns the sum of `qty * price` over all items. An empty inventory returns the int `0`. Numeric types are not coerced, so int stays int and float stays float.
-- **`report`**: one line per item, `"<name>: <qty> @ $<price>\n"`, using plain `str()` of the numbers with no formatting, rounding or padding. An empty inventory returns `""`. Order is insertion order. An item deleted and re-added moves to the end.
-- **Unknown or other action** (including `None`, or different casing like `"ADD"`): silent no-op that returns `None`.
-- **State persists across `do_stuff` calls** within a process, because the default instance is shared.
+- **add, new name**: stores `(qty, price)` with defaults `0` and `0`. Zero or negative quantities are accepted, and an item with `qty=0` is stored and stays.
+- **add, existing name**: `qty` is incremented. The `price` argument is **ignored**, so the original price is kept. Adding a negative qty may take the total to `<= 0`, and the item is **not** deleted on add.
+- **remove, missing name**: silent no-op, with no exception.
+- **remove, existing name**: `qty` is subtracted. If the result is `<= 0` the item is deleted. This includes over-removal (e.g. 5 minus 10), which deletes the item without error. `remove(name)` with the default `qty=0` deletes an item whose qty is already `<= 0`, and leaves a positive-qty item unchanged. A negative remove qty increases the stock.
+- **total**: sum of `qty * price`. An empty inventory returns the int `0`. Negative-qty items contribute negatively. Result types follow the inputs (int stays int, float stays float).
+- **report**: lines are `"{name}: {qty} @ ${price}\n"` in insertion order. A re-added item (after deletion) goes to the end. Values are formatted with plain `str()`, so `2.5` gives `$2.5` and `10` gives `$10`, with no rounding or padding. An empty inventory returns `""`. Every line, including the last, ends in `\n`.
+- **Unknown action**: returns `None`, with no state change and no exception.
+- **Return values**: `add` and `remove` return `None`. `total` and `report` return their values.
+- **Argument handling**: `name` is a required positional argument even for `total` and `report`. Calling `do_stuff("total")` raises `TypeError`. A non-str name in `report` raises `TypeError`, because it is concatenated with `str` (an f-string would not raise, so either keep this behavior or accept it as a documented edge, and decide explicitly).
+- **State across calls**: state persists across `do_stuff` calls in one process, as the module-level default inventory.
 
-## 4. Improvements (intentional changes, minimal)
+## 4. Improvements
 
-1. **The global `inv` dict is no longer exposed.** State now lives in `Inventory` instances, and `do_stuff` uses a private default instance. This removes the global-state smell. The caveat is that any external code that touched `inv` directly will break, so this is a deliberate, documented break.
-2. **New additive public API** (`Inventory`, `Item`) with type hints and docstrings. Nothing in the old behavior changes.
+1. **`inv` is no longer a public module global.** State lives in `Inventory` and a private default instance. The legacy dict-of-lists shape is not retained. Justification: this removes the global-state smell, and `do_stuff` keeps working for existing callers. If external code reads `inv` directly, flag this before merging.
+2. **Non-str names in `report`**: the original raises `TypeError` via `k + ": "`. The refactor should keep this by using `name + ": "` or an explicit `str` check, so there is no behavior change. This is listed for the implementer's attention, and it is not an improvement.
 
-Explicitly out of scope, even though tempting:
-- Raising on unknown actions.
-- Validating negative quantities.
-- Updating the price on a re-add.
-- Formatting prices.
+Everything else is unchanged, including the quirks (price ignored on restock, silent unknown actions, silent over-removal).
 
-Each of these would change behavior and needs a separate decision.
+## 5. Test plan (pytest)
 
-## 5. Test plan (pytest, 14 tests)
+Use an autouse fixture that calls `reset_default_inventory()`. Tests 1–10 and 12–13 use `Inventory` directly or `do_stuff`.
 
-Fixture: `monkeypatch.setattr(refactored, "_default", refactored.Inventory())` for the `do_stuff` tests. Shim tests need this fresh state, so `do_stuff` must resolve `_default` at call time.
-
-1. `test_add_new_item`: `add("a", 5, 2.5)` gives qty 5, and the report shows `"a: 5 @ $2.5\n"`.
-2. `test_add_existing_accumulates_and_keeps_original_price`: add `("a", 5, 2)`, then `("a", 3, 99)`, giving qty 8 and price 2.
-3. `test_add_zero_qty_creates_entry`: `add("a", 0, 5)` leaves `"a"` present with qty 0.
-4. `test_add_negative_on_existing_does_not_delete`: after `add("a", 2)` and `add("a", -5)`, `"a"` still exists with qty -3.
-5. `test_remove_partial`: `add("a", 5)` then `remove("a", 2)` leaves qty 3.
-6. `test_remove_exact_and_excess_delete`: removing exactly the quantity deletes the item, and so does removing more than the quantity.
-7. `test_remove_missing_is_noop`: `remove("nope", 1)` raises nothing and returns `None`, and the inventory is unchanged.
-8. `test_remove_default_qty_zero_quirk`: `remove("a")` on qty 5 keeps the item, but on a zero-quantity item it deletes it.
-9. `test_total_empty_returns_int_zero`: `total_value() == 0` and `isinstance(..., int)`.
-10. `test_total_multiple_items`: for example `(2, 1.5)` and `(3, 4)` gives `15.0`, checked with `pytest.approx` where floats are involved.
-11. `test_report_format_empty_and_order`: an empty inventory gives `""`. Otherwise lines follow insertion order and end with `"\n"`.
-12. `test_report_readd_moves_to_end`: add `a` and `b`, remove `a`, re-add `a`, and the order is `b` then `a`.
-13. `test_do_stuff_unknown_action_noop`: `do_stuff("bogus", "a")` returns `None` and leaves state unchanged. `"ADD"` is also a no-op.
-14. `test_do_stuff_shim_end_to_end_and_instance_isolation`: `do_stuff` add and remove return `None`. `total` and `report` return the expected values, and `name` is ignored (for example `do_stuff("total", "")`). Two separate `Inventory()` instances do not share state.
+1. `test_add_new_item_and_report`: add `"apple", 5, 2` gives report `"apple: 5 @ $2\n"`.
+2. `test_add_existing_increments_qty_keeps_original_price`: add `("a", 2, 10)` then `("a", 3, 99)` gives qty 5, report shows `$10`.
+3. `test_add_zero_qty_item_is_kept`: add `("a", 0, 5)` gives `"a" in inv` and a report line `"a: 0 @ $5\n"`.
+4. `test_add_negative_qty_on_existing_does_not_delete`: add 2, then add −5, the item remains with qty −3.
+5. `test_remove_partial`: add 5, remove 2 gives qty 3.
+6. `test_remove_exact_deletes`: add 5, remove 5 gives the item gone.
+7. `test_remove_more_than_available_deletes_silently`: add 5, remove 10 gives the item gone with no exception.
+8. `test_remove_missing_item_is_noop`: remove on an empty or other inventory raises nothing and changes nothing.
+9. `test_remove_default_qty_zero`: remove with no qty keeps a positive-qty item, and deletes a qty-0 item.
+10. `test_total_empty_returns_int_zero`: `total() == 0` and `isinstance(..., int)`.
+11. `test_total_mixed_prices`: several items, including a float price, gives the correct sum.
+12. `test_report_format_and_order`: floats print as `$2.5`, ints as `$10`, items appear in insertion order, and a deleted-then-re-added item moves to the end. Empty gives `""`.
+13. `test_unknown_action_returns_none_and_no_change`: `do_stuff("bogus", "x", 1, 1)` returns `None` and leaves state unchanged.
+14. `test_do_stuff_facade_matches_inventory_and_signature`: `do_stuff("add", ...)` and `do_stuff("remove", ...)` return `None`, `total` and `report` return values, and `do_stuff("total")` raises `TypeError`.
+15. `test_differential_against_legacy`: paste the legacy function into the test file as `legacy_do_stuff`. Run a seeded random sequence of about 200 operations (add, remove, total, report, with ints and floats, names from a small pool) through both implementations. Assert that every return value is equal and that the final reports match. This is the safety net for all the quirks listed above.

@@ -1,72 +1,95 @@
-from __future__ import annotations
-
 from dataclasses import dataclass
-from typing import Optional
 
 
 @dataclass
-class Item:
-    """A stock entry: quantity and unit price."""
+class _Item:
     qty: float
     price: float
 
 
 class Inventory:
-    """In-memory inventory keeping insertion order."""
+    """Simple insertion-ordered inventory keyed by item name.
+
+    No validation is performed. Quirks preserved from the legacy module:
+    price is ignored when restocking an existing item, and removing more
+    than is available silently deletes the item.
+    """
 
     def __init__(self) -> None:
-        self._items: dict[str, Item] = {}
+        self._items: dict = {}
 
-    def add(self, name: str, qty: float = 0, price: float = 0) -> None:
-        """Add stock. Existing items keep their original price."""
-        if name in self._items:
-            self._items[name].qty = self._items[name].qty + qty
+    def add(self, name, qty=0, price=0) -> None:
+        """New name -> store _Item(qty, price). Existing name -> qty += qty;
+        the price is NOT updated. Items are never deleted on add."""
+        item = self._items.get(name)
+        if item is not None:
+            item.qty += qty
         else:
-            self._items[name] = Item(qty, price)
+            self._items[name] = _Item(qty, price)
 
-    def remove(self, name: str, qty: float = 0) -> None:
-        """Remove stock; delete item if quantity drops to <= 0. Missing: no-op."""
+    def remove(self, name, qty=0) -> None:
+        """Missing name -> silent no-op. Otherwise subtract qty; if the
+        result is <= 0 the item is deleted (including over-removal)."""
         item = self._items.get(name)
         if item is None:
             return
-        item.qty = item.qty - qty
+        item.qty -= qty
         if item.qty <= 0:
             del self._items[name]
 
-    def total_value(self) -> float:
-        """Sum of qty * price over all items (int 0 when empty)."""
-        return sum((i.qty * i.price for i in self._items.values()), 0)
+    def total(self):
+        """Sum of qty*price over all items; int 0 when empty."""
+        t = 0
+        for item in self._items.values():
+            t += item.qty * item.price
+        return t
 
     def report(self) -> str:
-        """One line per item in insertion order."""
+        """One line per item in insertion order: "name: qty @ $price\\n".
+
+        Non-str names raise TypeError (as in the legacy implementation).
+        """
         return "".join(
-            f"{name}: {str(i.qty)} @ ${str(i.price)}\n"
-            for name, i in self._items.items()
+            name + ": " + str(item.qty) + " @ $" + str(item.price) + "\n"
+            for name, item in self._items.items()
         )
 
-    def __contains__(self, name: str) -> bool:
-        return name in self._items
-
-    def quantity(self, name: str) -> Optional[float]:
-        """Quantity of an item, or None if absent."""
+    def quantity(self, name):
+        """Return the qty, or None if absent."""
         item = self._items.get(name)
         return None if item is None else item.qty
 
+    def __contains__(self, name) -> bool:
+        return name in self._items
 
-_default = Inventory()
+    def __len__(self) -> int:
+        return len(self._items)
+
+
+_default_inventory = Inventory()
+
+
+def reset_default_inventory() -> None:
+    """Replace the module-level default inventory with a fresh one."""
+    global _default_inventory
+    _default_inventory = Inventory()
 
 
 def do_stuff(action, name, qty=0, price=0):
-    """Backward-compatible shim dispatching on action strings."""
-    inv = _default
+    """Backward-compatible facade over the default inventory.
+
+    'add' / 'remove' return None; 'total' / 'report' return their values;
+    any other action is a silent no-op returning None.
+    """
+    inventory = _default_inventory
     if action == "add":
-        inv.add(name, qty, price)
+        inventory.add(name, qty, price)
         return None
-    if action == "remove":
-        inv.remove(name, qty)
+    elif action == "remove":
+        inventory.remove(name, qty)
         return None
-    if action == "total":
-        return inv.total_value()
-    if action == "report":
-        return inv.report()
+    elif action == "total":
+        return inventory.total()
+    elif action == "report":
+        return inventory.report()
     return None

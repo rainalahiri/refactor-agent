@@ -1,17 +1,23 @@
-import sys
+import argparse
 from pathlib import Path
 
 from agent.graph import build_graph
 
 
 def main():
-    source = Path(sys.argv[1] if len(sys.argv) > 1 else "samples/legacy_inventory.py")
+    parser = argparse.ArgumentParser(description="Multi-agent refactoring pipeline")
+    parser.add_argument("source", nargs="?", default="samples/legacy_inventory.py")
+    parser.add_argument("--inject-bug", action="store_true",
+                        help="Demo: sabotage the first attempt to show self-correction")
+    args = parser.parse_args()
 
+    source = Path(args.source)
     app = build_graph()
     initial_state = {
-        "legacy_code": source.read_text(),
+        "legacy_code": source.read_text(encoding="utf-8"),
         "attempts": 0,
         "error_history": [],
+        "inject_bug": args.inject_bug,
     }
 
     final = {}
@@ -21,14 +27,18 @@ def main():
             if node == "qa":
                 status = "PASSED" if update["tests_passed"] else "FAILED"
                 print(f"[qa] attempt {final['attempts']}: {status}")
+                if not update["tests_passed"]:
+                    for line in update["test_output"].splitlines():
+                        if line.startswith("FAILED"):
+                            print(f"     {line}")
             else:
                 print(f"[{node}] done")
 
     out = Path("workspace")
     out.mkdir(exist_ok=True)
-    (out / "refactored.py").write_text(final["refactored_code"])
-    (out / "test_refactored.py").write_text(final["test_code"])
-    (out / "plan.md").write_text(final["plan"])
+    (out / "refactored.py").write_text(final["refactored_code"], encoding="utf-8")
+    (out / "test_refactored.py").write_text(final["test_code"], encoding="utf-8")
+    (out / "plan.md").write_text(final["plan"], encoding="utf-8")
 
     if final["tests_passed"]:
         print(f"\nSuccess after {final['attempts']} attempt(s). Output in workspace/")

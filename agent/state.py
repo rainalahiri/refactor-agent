@@ -20,3 +20,6 @@ class RefactorState(TypedDict):
     # --- loop control ---
     attempts: int             # how many Coder→QA rounds so far
     error_history: Annotated[list[str], operator.add]  # every failure, kept forever
+
+    # --- demo only ---
+    inject_bug: bool          # sabotage attempt 1 to demonstrate self-correction

@@ -91,6 +91,15 @@ def extract_tag(text: str, tag: str) -> str:
     return code + "\n"
 
 
+def inject_bug(code: str) -> str:
+    """DEMO ONLY: flip the delete threshold so items at exactly qty 0 survive."""
+    if "<= 0" not in code:
+        print("[demo] no '<= 0' found to sabotage; running normally")
+        return code
+    print("[demo] injecting bug: '<= 0' -> '< 0'")
+    return code.replace("<= 0", "< 0")
+
+
 def coder(state: RefactorState) -> dict:
     parts = [
         f"## Refactoring plan\n{state['plan']}",
@@ -115,8 +124,12 @@ def coder(state: RefactorState) -> dict:
     ])
     text = get_text(response)
 
+    code = extract_tag(text, "refactored_code")
+    if state.get("inject_bug") and state.get("attempts", 0) == 0:
+        code = inject_bug(code)
+
     return {
-        "refactored_code": extract_tag(text, "refactored_code"),
+        "refactored_code": code,
         "test_code": extract_tag(text, "test_code"),
         "attempts": state.get("attempts", 0) + 1,
     }
