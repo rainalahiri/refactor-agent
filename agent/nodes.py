@@ -6,6 +6,9 @@ from langchain_core.messages import SystemMessage, HumanMessage
 
 from agent.state import RefactorState
 
+from agent.sandbox import run_tests
+from pathlib import Path
+
 load_dotenv()
 
 llm = ChatAnthropic(model="claude-sonnet-5-5", max_tokens=16000)
@@ -119,10 +122,21 @@ def coder(state: RefactorState) -> dict:
     }
 
 
-if __name__ == "__main__":
-    from pathlib import Path
-    from agent.sandbox import run_tests
+MAX_ERROR_CHARS = 4000
 
+
+def qa(state: RefactorState) -> dict:
+    passed, output = run_tests(state["refactored_code"], state["test_code"])
+
+    update = {"test_output": output, "tests_passed": passed}
+
+    if not passed:
+        # Keep the end of the output, where pytest puts the failure summary
+        update["error_history"] = [output[-MAX_ERROR_CHARS:]]
+
+    return update
+
+if __name__ == "__main__":
     state = {
         "legacy_code": Path("samples/legacy_inventory.py").read_text(),
         "error_history": [],
@@ -137,6 +151,6 @@ if __name__ == "__main__":
     Path("workspace/refactored.py").write_text(state["refactored_code"])
     Path("workspace/test_refactored.py").write_text(state["test_code"])
 
-    passed, output = run_tests(state["refactored_code"], state["test_code"])
-    print("PASSED" if passed else "FAILED")
-    print(output)
+    state.update(qa(state))
+    print("PASSED" if state["tests_passed"] else "FAILED")
+    print(state["test_output"])
