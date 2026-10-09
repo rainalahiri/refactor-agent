@@ -112,9 +112,25 @@ refactor-agent/
 ├── workspace/        # generated output
 └── main.py           # CLI entry point
 ```
+## Results
+
+| Sample | Smells | Result |
+|---|---|---|
+| `legacy_inventory.py` | global state, god function, magic indexes | ✅ 1 attempt |
+| `legacy_grades.py` | duplicated logic, deep nesting, magic thresholds | ✅ 1 attempt |
+| `legacy_config.py` | mutable default arg, bare except, silent truncation | ✅ 1 attempt |
+| `legacy_shipping.py` | boolean flag args, magic numbers | ✅ 1 attempt |
+| `legacy_inventory.py --inject-bug` | injected fault | ✅ self-corrected on attempt 2 |
+
+Highlights from the generated output (see `workspace/<sample>/`):
+
+- **Preserve vs. fix:** in `legacy_config`, the Architect fixed the shared mutable default and declared it as an intentional change. It deliberately kept quirks callers might rely on, such as `a=b=c` → `"b"`, and it forbade "cleaner" idioms like `split("=", 1)` that would silently change behavior.
+- **Differential testing:** the `legacy_shipping` tests compare the refactored function against the original across 360 boundary-value input combinations.
+- **Backward compatibility:** the original entry points (`do_stuff`, `ship`) remain as thin wrappers over the new clean APIs.
 
 ## Limitations and future work
 
+- **Property-based testing.** Differential tests only check sampled inputs. Adding `hypothesis` would test thousands of random inputs and catch rare floating-point rounding differences.
 - **Single-file modules only.** Multi-file refactors would need dependency analysis and a file-level plan.
 - **Tests are LLM-generated.** Differential tests against the legacy code help, but the tests themselves aren't independently verified.
 - **Sandbox hardening.** Possible additions:
