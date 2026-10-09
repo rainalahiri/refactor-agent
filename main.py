@@ -34,14 +34,18 @@ def main():
             else:
                 print(f"[{node}] done")
 
-    out = Path("workspace")
-    out.mkdir(exist_ok=True)
+    out = Path("workspace") / source.stem
+    out.mkdir(parents=True, exist_ok=True)
     (out / "refactored.py").write_text(final["refactored_code"], encoding="utf-8")
     (out / "test_refactored.py").write_text(final["test_code"], encoding="utf-8")
     (out / "plan.md").write_text(final["plan"], encoding="utf-8")
+    (out / "result.txt").write_text(
+        f"passed: {final['tests_passed']}\nattempts: {final['attempts']}\n",
+        encoding="utf-8",
+    )
 
     if final["tests_passed"]:
-        print(f"\nSuccess after {final['attempts']} attempt(s). Output in workspace/")
+        print(f"\nSuccess after {final['attempts']} attempt(s). Output in {out}/")
     else:
         print(f"\nGave up after {final['attempts']} attempts. Last output:\n{final['test_output']}")
 
